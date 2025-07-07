@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Управление данными из Google таблицы</title>
+    <script src="https://apis.google.com/js/api.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .category {
+            margin-bottom: 30px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            background-color: #f9f9f9;
+        }
+        .category-title {
+            font-size: 1.5em;
+            margin-top: 0;
+            color: #2c3e50;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #ddd;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #eaeaea;
+        }
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+        .edit-btn, .save-btn, .cancel-btn, .auth-btn {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 14px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .cancel-btn {
+            background-color: #f44336;
+        }
+        .auth-btn {
+            background-color: #4285F4;
+        }
+        .edit-mode {
+            background-color: #fffde7;
+        }
+        input, select {
+            width: 100%;
+            padding: 6px;
+            box-sizing: border-box;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background-color: #dff0d8;
+            color: #3c763d;
+        }
+        .error {
+            background-color: #f2dede;
+            color: #a94442;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 2s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .controls {
+            margin: 20px 0;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Управление данными из Google таблицы</h1>
+        
+        <div class="controls">
+            <button id="authButton" class="auth-btn">Авторизоваться в Google</button>
+            <button id="loadData" class="edit-btn" disabled>Загрузить данные</button>
+        </div>
+        
+        <div id="status" class="status" style="display: none;"></div>
+        
+        <div id="dataContainer">
+            <!-- Данные будут загружены здесь -->
+        </div>
+    </div>
+
+    <script>
+        // Конфигурация приложения
+        const SPREADSHEET_ID = '1hhBHwiHxd7lW_2Ow7WT2364qO-aV06zQ_EQRPOym9QU';
+        const API_KEY = 'AIzaSyD9GqJv8oXqQdHmQZQJvQvQvQvQvQvQvQvQ'; // Замените на ваш API ключ
+        const CLIENT_ID = 'YOUR_CLIENT_ID.apps.googleusercontent.com'; // Замените на ваш Client ID
+        const SCOPES = 'https://www.googleapis.com/auth/spreadsheets';
+        
+        let gapiInited = false;
+        let gisInited = false;
+        let tokenClient;
+        let categories = {};
+        let originalData = {};
+        
+        // Инициализация API
+        function initializeGapiClient() {
+            gapi.client.init({
+                apiKey: API_KEY,
+                discoveryDocs: ["https://sheets.googleapis.com/$discovery/rest?version=v4"],
+            }).then(function() {
+                gapiInited = true;
+                maybeEnableButtons();
+            }).catch(function(error) {
+                showStatus('Ошибка инициализации Google API: ' + error.message, 'error');
+            });
+        }
+        
+        // Инициализация GIS
+        function initializeGIS() {
+            tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: CLIENT_ID,
+                scope: SCOPES,
+                callback: '', // Определяется позже
+            });
+            gisInited = true;
+            maybeEnableButtons();
+        }
+        
+        // Проверка готовности API и включение кнопок
+        function maybeEnableButtons() {
+            if (gapiInited && gisInited) {
+                document.getElementById('loadData').disabled = false;
+            }
+        }
+        
+        // Авторизация
+        function handleAuthClick() {
+            tokenClient.callback = async (response) => {
+                if (response.error !== undefined) {
+                    throw response;
+                }
+                document.getElementById('authButton').style.display = 'none';
+                showStatus('Авторизация прошла успешно', 'success');
+                await loadSheetData();
+            };
+            
+            if (gapi.client.getToken() === null) {
+                tokenClient.requestAccessToken({prompt: 'consent'});
+            } else {
+                tokenClient.requestAccessToken({prompt: ''});
+            }
+        }
+        
+        // Загрузка данных из таблицы
+        async function loadSheetData() {
+            showLoading();
+            
+            try {
+                const response = await gapi.client.sheets.spreadsheets.values.get({
+                    spreadsheetId: SPREADSHEET_ID,
+                    range: 'A:Z', // Загружаем все столбцы
+                });
+                
+                const values = response.result.values;
+                if (!values || values.length === 0) {
+                    showStatus('Нет данных в таблице', 'error');
+                    return;
+                }
+                
+                // Предполагаем, что первая строка - заголовки
+                const headers = values[0];
+                const dataRows = values.slice(1);
+                
+                // Группируем данные по категориям
+                categories = {};
+                originalData = { headers: headers, rows: dataRows };
+                
+                // Предполагаем, что первый столбец - это категория
+                dataRows.forEach(row => {
+                    const category = row[0];
+                    if (!categories[category]) {
+                        categories[category] = [];
+                    }
+                    categories[category].push(row);
+                });
+                
+                renderData();
+                hideLoading();
+                showStatus('Данные успешно загружены', 'success');
+            } catch (error) {
+                hideLoading();
+                showStatus('Ошибка загрузки данных: ' + error.message, 'error');
+                console.error('Ошибка загрузки данных:', error);
+            }
+        }
+        
+        // Отображение данных
+        function renderData() {
+            const container = document.getElementById('dataContainer');
+            container.innerHTML = '';
+            
+            for (const [category, rows] of Object.entries(categories)) {
+                const categoryDiv = document.createElement('div');
+                categoryDiv.className = 'category';
+                
+                const title = document.createElement('h2');
+                title.className = 'category-title';
+                title.textContent = category;
+                categoryDiv.appendChild(title);
+                
+                const table = document.createElement('table');
+                
+                // Заголовок таблицы
+                const thead = document.createElement('thead');
+                const headerRow = document.createElement('tr');
+                
+                originalData.headers.forEach(header => {
+                    const th = document.createElement('th');
+                    th.textContent = header;
+                    headerRow.appendChild(th);
+                });
+                
+                const actionsHeader = document.createElement('th');
+                actionsHeader.textContent = 'Действия';
+                headerRow.appendChild(actionsHeader);
+                
+                thead.appendChild(headerRow);
+                table.appendChild(thead);
+                
+                // Тело таблицы
+                const tbody = document.createElement('tbody');
+                
+                rows.forEach((row, rowIndex) => {
+                    const tr = document.createElement('tr');
+                    tr.dataset.rowIndex = rowIndex;
+                    tr.dataset.category = category;
+                    
+                    row.forEach((cell, cellIndex) => {
+                        const td = document.createElement('td');
+                        td.textContent = cell;
+                        td.dataset.columnIndex = cellIndex;
+                        tr.appendChild(td);
+                    });
+                    
+                    // Кнопки действий
+                    const actionsTd = document.createElement('td');
+                    const editButton = document.createElement('button');
+                    editButton.className = 'edit-btn';
+                    editButton.textContent = 'Редактировать';
+                    editButton.onclick = () => enableEditMode(tr);
+                    
+                    actionsTd.appendChild(editButton);
+                    tr.appendChild(actionsTd);
+                    
+                    tbody.appendChild(tr);
+                });
+                
+                table.appendChild(tbody);
+                categoryDiv.appendChild(table);
+                container.appendChild(categoryDiv);
+            }
+        }
+        
+        // Включение режима редактирования
+        function enableEditMode(row) {
+            // Проверяем, не находится ли строка уже в режиме редактирования
+            if (row.classList.contains('edit-mode')) {
+                return;
+            }
+            
+            row.classList.add('edit-mode');
+            
+            // Сохраняем оригинальные значения
+            const originalValues = [];
+            const cells = row.querySelectorAll('td:not(:last-child)');
+            
+            cells.forEach((cell, index) => {
+                originalValues[index] = cell.textContent;
+                
+                // Заменяем содержимое ячейки на input
+                const input = document.createElement(index === 0 ? 'select' : 'input');
+                
+                if (index === 0) {
+                    // Для первого столбца (категория) создаем select
+                    for (const category of Object.keys(categories)) {
+                        const option = document.createElement('option');
+                        option.value = category;
+                        option.textContent = category;
+                        if (category === cell.textContent) {
+                            option.selected = true;
+                        }
+                        input.appendChild(option);
+                    }
+                    
+                    // Добавляем опцию для новой категории
+                    const option = document.createElement('option');
+                    option.value = 'NEW_CATEGORY';
+                    option.textContent = '-- Новая категория --';
+                    input.appendChild(option);
+                } else {
+                    input.type = 'text';
+                    input.value = cell.textContent;
+                }
+                
+                cell.textContent = '';
+                cell.appendChild(input);
+            });
+            
+            // Заменяем кнопку "Редактировать" на "Сохранить" и "Отмена"
+            const actionsTd = row.querySelector('td:last-child');
+            actionsTd.innerHTML = '';
+            
+            const saveButton = document.createElement('button');
+            saveButton.className = 'save-btn';
+            saveButton.textContent = 'Сохранить';
+            saveButton.onclick = () => saveRow(row, originalValues);
+            
+            const cancelButton = document.createElement('button');
+            cancelButton.className = 'cancel-btn';
+            cancelButton.textContent = 'Отмена';
+            cancelButton.onclick = () => cancelEdit(row, originalValues);
+            
+            actionsTd.appendChild(saveButton);
+            actionsTd.appendChild(cancelButton);
+        }
+        
+        // Отмена редактирования
+        function cancelEdit(row, originalValues) {
+            row.classList.remove('edit-mode');
+            const cells = row.querySelectorAll('td:not(:last-child)');
+            
+            cells.forEach((cell, index) => {
+                cell.innerHTML = originalValues[index];
+            });
+            
+            const actionsTd = row.querySelector('td:last-child');
+            actionsTd.innerHTML = '';
+            
+            const editButton = document.createElement('button');
+            editButton.className = 'edit-btn';
+            editButton.textContent = 'Редактировать';
+            editButton.onclick = () => enableEditMode(row);
+            
+            actionsTd.appendChild(editButton);
+        }
+        
+        // Сохранение изменений
+        async function saveRow(row, originalValues) {
+            const category = row.dataset.category;
+            const rowIndex = parseInt(row.dataset.rowIndex);
+            const cells = row.querySelectorAll('td:not(:last-child)');
+            const updatedValues = [];
+            
+            // Собираем новые значения
+            cells.forEach((cell, index) => {
+                const input = cell.querySelector('input, select');
+                updatedValues[index] = input.value;
+            });
+            
+            // Проверяем, изменилась ли категория
+            const newCategory = updatedValues[0];
+            const categoryChanged = newCategory !== category && newCategory !== 'NEW_CATEGORY';
+            
+            try {
+                showLoading();
+                
+                // Находим номер строки в исходных данных (плюс 2: 1 для заголовка, 1 для нумерации с 0)
+                let globalRowIndex = -1;
+                let currentRow = 0;
+                
+                for (let i = 0; i < originalData.rows.length; i++) {
+                    if (originalData.rows[i][0] === category) {
+                        if (currentRow === rowIndex) {
+                            globalRowIndex = i + 2; // +2 для заголовка и нумерации с 0
+                            break;
+                        }
+                        currentRow++;
+                    }
+                }
+                
+                if (globalRowIndex === -1) {
+                    throw new Error('Не удалось найти строку для обновления');
+                }
+                
+                // Обновляем данные в Google таблице
+                const range = `A${globalRowIndex}:${String.fromCharCode(65 + updatedValues.length - 1)}${globalRowIndex}`;
+                
+                const response = await gapi.client.sheets.spreadsheets.values.update({
+                    spreadsheetId: SPREADSHEET_ID,
+                    range: range,
+                    valueInputOption: 'RAW',
+                    values: [updatedValues]
+                });
+                
+                // Обновляем локальные данные
+                originalData.rows[globalRowIndex - 2] = updatedValues;
+                
+                // Если изменилась категория, перегружаем данные
+                if (categoryChanged) {
+                    await loadSheetData();
+                } else {
+                    // Иначе просто обновляем строку
+                    cancelEdit(row, updatedValues);
+                }
+                
+                showStatus('Изменения успешно сохранены', 'success');
+            } catch (error) {
+                showStatus('Ошибка сохранения: ' + error.message, 'error');
+                console.error('Ошибка сохранения:', error);
+            } finally {
+                hideLoading();
+            }
+        }
+        
+        // Показать статус
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+            statusDiv.style.display = 'block';
+            
+            setTimeout(() => {
+                statusDiv.style.display = 'none';
+            }, 5000);
+        }
+        
+        // Показать загрузку
+        function showLoading() {
+            const container = document.getElementById('dataContainer');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Загрузка данных...</p></div>';
+        }
+        
+        // Скрыть загрузку
+        function hideLoading() {
+            // Обрабатывается в renderData
+        }
+        
+        // Инициализация при загрузке страницы
+        window.onload = function() {
+            document.getElementById('authButton').onclick = handleAuthClick;
+            document.getElementById('loadData').onclick = loadSheetData;
+            
+            gapi.load('client', initializeGapiClient);
+            google.accounts.oauth2.init(initializeGIS);
+        };
+    </script>
+</body>
+</html>
